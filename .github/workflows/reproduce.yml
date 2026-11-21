@@ -1,0 +1,46 @@
+name: Sandbox reproducibility
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  exact-node22-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render twice in the kit's exact Node image without network
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE='node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d'
+          docker pull "$IMAGE"
+          mkdir -p "$RUNNER_TEMP/render-a" "$RUNNER_TEMP/render-b"
+          chmod 777 "$RUNNER_TEMP/render-a" "$RUNNER_TEMP/render-b"
+          for RUN in a b; do
+            timeout --signal=TERM --kill-after=5s 60s docker run --rm --network none --cpus 1 --memory 512m --pids-limit 64 \
+              --read-only --cap-drop ALL --security-opt no-new-privileges \
+              --user 65534:65534 \
+              --mount type=bind,src="$GITHUB_WORKSPACE",dst=/bot,readonly \
+              --mount type=bind,src="$RUNNER_TEMP/render-$RUN",dst=/output \
+              --workdir /bot --entrypoint node "$IMAGE" main.ts
+          done
+          cmp "$RUNNER_TEMP/render-a/entry.png" "$RUNNER_TEMP/render-b/entry.png"
+          sha256sum "$RUNNER_TEMP/render-a/entry.png"
+          python3 -c 'import pathlib,struct,os; p=pathlib.Path(os.environ["RUNNER_TEMP"])/"render-a/entry.png"; d=p.read_bytes(); assert d[:8]==b"\x89PNG\r\n\x1a\n"; assert struct.unpack(">II",d[16:24])==(1024,768); assert len(d)<=1048576; assert p.stat().st_mode & 4; print("PASS: deterministic 1024x768 PNG,",len(d),"bytes, readable by other users")'
+      - name: Run document semantics and MRZ tests in Node 22
+        shell: bash
+        run: |
+          docker run --rm --network none --cpus 1 --memory 512m --pids-limit 64 \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --user 65534:65534 --tmpfs /tmp:rw,nosuid,nodev,mode=1777,size=128m \
+            --mount type=bind,src="$GITHUB_WORKSPACE",dst=/bot,readonly \
+            --workdir /bot --entrypoint node \
+            'node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d' \
+            --test test/document.test.mjs test/entry.test.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nerava-passport-sandbox
+          path: ${{ runner.temp }}/render-a/entry.png
+          if-no-files-found: error

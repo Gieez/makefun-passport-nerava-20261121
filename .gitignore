@@ -1,0 +1,6 @@
+output/
+*.tar.gz
+*.log
+.env
+*.key
+.DS_Store
